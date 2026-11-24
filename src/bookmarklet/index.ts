@@ -206,6 +206,23 @@ function findRemoveButton(doc: Document): HTMLElement | null {
   return null;
 }
 
+/** Text a user could see: page content only, without embedded scripts or styles. */
+function visibleText(doc: Document): string {
+  const clone = doc.body?.cloneNode(true) as HTMLElement | null;
+  if (!clone) return "";
+  clone.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
+  return clone.textContent ?? "";
+}
+
+/** Short labels of repost-related controls, to help diagnose layout changes. */
+function repostLabels(doc: Document): string {
+  const labels = Array.from(doc.querySelectorAll<HTMLElement>("button, [role='button'], a"))
+    .map((n) => (n.getAttribute("aria-label") ?? n.textContent ?? "").trim())
+    .filter((t) => /repost/i.test(t) && t.length <= 40);
+  const unique = [...new Set(labels)].slice(0, 5);
+  return unique.length ? unique.join(" | ") : "none";
+}
+
 async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEntry> {
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
@@ -224,28 +241,30 @@ async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEnt
     if (!doc || doc.URL === "about:blank") {
       return { id: item.id, outcome: "failed", detail: "video page could not be opened" };
     }
-    if (RATE_LIMIT.test(doc.body?.textContent ?? "")) {
+
+    // Look for the control first. Only if it is missing do we check for rate-limit text,
+    // and that check ignores scripts so embedded JSON cannot trigger it.
+    const button = findRemoveButton(doc);
+    if (button) {
+      if (dryRun) {
+        return { id: item.id, outcome: "dry-run", detail: "Remove repost control found" };
+      }
+      button.click();
+      await sleep(1800);
+      if (findRemoveButton(doc)) {
+        return { id: item.id, outcome: "failed", detail: "control still present after click" };
+      }
+      return { id: item.id, outcome: "removed" };
+    }
+
+    if (RATE_LIMIT.test(visibleText(doc))) {
       return { id: item.id, outcome: "failed", detail: RATE_LIMIT_DETAIL };
     }
-
-    const button = findRemoveButton(doc);
-    if (!button) {
-      return {
-        id: item.id,
-        outcome: "skipped",
-        detail: "no Remove repost control (already removed, or page changed)",
-      };
-    }
-    if (dryRun) {
-      return { id: item.id, outcome: "dry-run", detail: "Remove repost control found" };
-    }
-
-    button.click();
-    await sleep(1800);
-    if (findRemoveButton(doc)) {
-      return { id: item.id, outcome: "failed", detail: "control still present after click" };
-    }
-    return { id: item.id, outcome: "removed" };
+    return {
+      id: item.id,
+      outcome: "skipped",
+      detail: `no Remove repost control. Repost labels: ${repostLabels(doc)}`,
+    };
   } catch (err) {
     return { id: item.id, outcome: "failed", detail: err instanceof Error ? err.message : "unknown error" };
   } finally {

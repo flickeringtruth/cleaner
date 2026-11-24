@@ -3,8 +3,9 @@
  *
  * Records outgoing requests made by tiktok.com so the endpoints behind
  * "list my reposts" and "remove a repost" can be identified from an iPhone.
- * Only the path and parameter NAMES are stored, never parameter values,
- * headers, cookies or tokens.
+ *
+ * Privacy: only sanitized paths and parameter NAMES are stored. Query values,
+ * request bodies, headers, cookies and tokens are never read or saved.
  *
  * Removal is intentionally NOT implemented yet: it needs endpoints that
  * have been observed in real captures, not guessed.
@@ -20,6 +21,17 @@ interface Capture {
   path: string;
   paramNames: string[];
   bodyKeys: string[];
+}
+
+/**
+ * Masks anything that could identify the account or carry a credential:
+ * numeric IDs and long opaque segments become ":id".
+ */
+function sanitizePath(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((seg) => (/^\d{3,}$/.test(seg) || /^[A-Za-z0-9_-]{16,}$/.test(seg) ? ":id" : seg))
+    .join("/");
 }
 
 function loadCaptures(): Capture[] {
@@ -38,6 +50,7 @@ function saveCaptures(list: Capture[]): void {
   }
 }
 
+/** Returns only the key names of a JSON body. Values are never read into storage. */
 function describeBody(body: unknown): string[] {
   if (typeof body === "string") {
     try {
@@ -65,7 +78,7 @@ function record(method: string, rawUrl: string, body: unknown): void {
   const entry: Capture = {
     time: new Date().toISOString(),
     method: method.toUpperCase(),
-    path: url.pathname,
+    path: sanitizePath(url.pathname),
     paramNames: Array.from(new Set(url.searchParams.keys())),
     bodyKeys: describeBody(body),
   };

@@ -4,12 +4,13 @@
  * Clipboard holds a batch from the dashboard -> remove that batch.
  * Otherwise -> scan the current Reposts tab and copy the list for the dashboard.
  *
- * Removal only clicks a control whose text is exactly "Remove repost". Items are
- * opened in a hidden frame of the same page. Pacing is randomised, and the run
- * stops on rate-limit messages or after three failures in a row.
+ * For each video: look for a "Remove repost" control; if it is not visible, open
+ * the Share panel once and look again. Only an element whose text is exactly
+ * "Remove repost" is clicked. Pacing is randomised, and the run stops on rate-limit
+ * messages or after three failures in a row.
  *
- * UNTESTED on a real account: the matching behaviour of the Remove repost control
- * and whether TikTok allows the video page to load in a frame must be verified.
+ * UNTESTED on a real account: the Share button and Remove repost control matching,
+ * and whether TikTok allows the video page to load in a frame, must be verified.
  */
 import {
   APP_TAG,
@@ -27,6 +28,7 @@ const PANEL_ID = "rc-v2-panel";
 const TIKTOK_HOST = /(^|\.)tiktok\.com$/i;
 const VIDEO_PATH = /^\/@([^/]+)\/video\/(\d+)/;
 const REMOVE_LABEL = /^remove repost$/i;
+const SHARE_LABEL = /^share/i;
 const RATE_LIMIT = /too many requests|try again later|rate limit/i;
 const RATE_LIMIT_DETAIL = "rate limited";
 const BTN =
@@ -195,13 +197,25 @@ function waitForLoad(frame: HTMLIFrameElement, timeoutMs: number): Promise<void>
   });
 }
 
+function labelOf(node: HTMLElement): string {
+  return (node.getAttribute("aria-label") ?? node.textContent ?? "").trim();
+}
+
 /** Finds the element whose visible text is exactly "Remove repost" (deepest match wins). */
 function findRemoveButton(doc: Document): HTMLElement | null {
   const nodes = Array.from(doc.querySelectorAll<HTMLElement>("button, [role='button'], a, div, span"));
   for (let i = nodes.length - 1; i >= 0; i--) {
-    const node = nodes[i];
-    const label = (node.getAttribute("aria-label") ?? node.textContent ?? "").trim();
-    if (REMOVE_LABEL.test(label)) return node;
+    if (REMOVE_LABEL.test(labelOf(nodes[i]))) return nodes[i];
+  }
+  return null;
+}
+
+/** Finds a Share control (short label starting with "Share"). */
+function findShareButton(doc: Document): HTMLElement | null {
+  const nodes = Array.from(doc.querySelectorAll<HTMLElement>("button, [role='button'], a"));
+  for (const node of nodes) {
+    const label = labelOf(node);
+    if (label.length <= 24 && SHARE_LABEL.test(label)) return node;
   }
   return null;
 }
@@ -214,12 +228,12 @@ function visibleText(doc: Document): string {
   return clone.textContent ?? "";
 }
 
-/** Short labels of repost-related controls, to help diagnose layout changes. */
-function repostLabels(doc: Document): string {
+/** Short labels of repost- or share-related controls, to help diagnose layout changes. */
+function relatedLabels(doc: Document): string {
   const labels = Array.from(doc.querySelectorAll<HTMLElement>("button, [role='button'], a"))
-    .map((n) => (n.getAttribute("aria-label") ?? n.textContent ?? "").trim())
-    .filter((t) => /repost/i.test(t) && t.length <= 40);
-  const unique = [...new Set(labels)].slice(0, 5);
+    .map(labelOf)
+    .filter((t) => /repost|share/i.test(t) && t.length <= 40);
+  const unique = [...new Set(labels)].slice(0, 8);
   return unique.length ? unique.join(" | ") : "none";
 }
 
@@ -242,9 +256,18 @@ async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEnt
       return { id: item.id, outcome: "failed", detail: "video page could not be opened" };
     }
 
-    // Look for the control first. Only if it is missing do we check for rate-limit text,
-    // and that check ignores scripts so embedded JSON cannot trigger it.
-    const button = findRemoveButton(doc);
+    let button = findRemoveButton(doc);
+    let openedShare = false;
+    if (!button) {
+      const share = findShareButton(doc);
+      if (share) {
+        share.click();
+        openedShare = true;
+        await sleep(1500);
+        button = findRemoveButton(doc);
+      }
+    }
+
     if (button) {
       if (dryRun) {
         return { id: item.id, outcome: "dry-run", detail: "Remove repost control found" };
@@ -260,10 +283,11 @@ async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEnt
     if (RATE_LIMIT.test(visibleText(doc))) {
       return { id: item.id, outcome: "failed", detail: RATE_LIMIT_DETAIL };
     }
+    const where = openedShare ? "after opening Share" : "(no Share control found)";
     return {
       id: item.id,
       outcome: "skipped",
-      detail: `no Remove repost control. Repost labels: ${repostLabels(doc)}`,
+      detail: `no Remove repost control ${where}. Labels: ${relatedLabels(doc)}`,
     };
   } catch (err) {
     return { id: item.id, outcome: "failed", detail: err instanceof Error ? err.message : "unknown error" };

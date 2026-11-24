@@ -59,18 +59,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isItem(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const { id, url, author } = value;
-  return (
-    typeof id === "string" &&
-    ID_RE.test(id) &&
-    typeof url === "string" &&
-    url === `https://www.tiktok.com/@${typeof author === "string" ? author : ""}/video/${id}` ||
-    (typeof id === "string" &&
-      ID_RE.test(id) &&
-      typeof url === "string" &&
-      url.startsWith("https://www.tiktok.com/@") &&
-      url.endsWith(`/video/${id}`) &&
-      (author === null || typeof author === "string"))
-  );
+  if (typeof id !== "string" || !ID_RE.test(id)) return false;
+  if (typeof url !== "string" || !url.startsWith("https://www.tiktok.com/@")) return false;
+  if (!url.endsWith(`/video/${id}`)) return false;
+  return author === null || typeof author === "string";
 }
 
 function isItems(value: unknown): value is RepostItem[] {
@@ -98,17 +90,20 @@ export function parsePayload(text: string): Payload | null {
   }
   if (!isRecord(data) || data.app !== APP_TAG || data.v !== PROTOCOL_VERSION) return null;
 
-  const base = {
-    app: APP_TAG,
-    v: PROTOCOL_VERSION,
-    createdAt: typeof data.createdAt === "string" ? data.createdAt : new Date(0).toISOString(),
-  } as const;
+  const createdAt = typeof data.createdAt === "string" ? data.createdAt : new Date(0).toISOString();
 
   if (data.kind === "scan" && isItems(data.items)) {
-    return { ...base, kind: "scan", items: data.items };
+    return { app: APP_TAG, v: PROTOCOL_VERSION, kind: "scan", createdAt, items: data.items };
   }
   if (data.kind === "remove" && isItems(data.items) && typeof data.dryRun === "boolean") {
-    return { ...base, kind: "remove", dryRun: data.dryRun, items: data.items };
+    return {
+      app: APP_TAG,
+      v: PROTOCOL_VERSION,
+      kind: "remove",
+      createdAt,
+      dryRun: data.dryRun,
+      items: data.items,
+    };
   }
   if (
     data.kind === "result" &&
@@ -116,7 +111,14 @@ export function parsePayload(text: string): Payload | null {
     data.results.every(isResult) &&
     typeof data.dryRun === "boolean"
   ) {
-    return { ...base, kind: "result", dryRun: data.dryRun, results: data.results as ResultEntry[] };
+    return {
+      app: APP_TAG,
+      v: PROTOCOL_VERSION,
+      kind: "result",
+      createdAt,
+      dryRun: data.dryRun,
+      results: data.results as ResultEntry[],
+    };
   }
   return null;
 }

@@ -1,12 +1,13 @@
-
 {
   "name": "repost-cleaner",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build && vite build -c vite.bookmarklet.config.ts",
+    "preview": "vite preview"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

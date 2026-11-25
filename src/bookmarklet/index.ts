@@ -1,16 +1,18 @@
 /**
- * Repost Cleaner bookmarklet. Runs only on tiktok.com, inside the logged-in page.
+ * Repost Cleaner bookmarklet. Runs on tiktok.com inside the logged-in page.
+ *
+ * Use it with Safari's "Request Desktop Website" turned on for tiktok.com.
+ * The desktop layout shows the Remove repost control; the mobile layout does not.
  *
  * Clipboard holds a batch from the dashboard -> remove that batch.
  * Otherwise -> scan the current Reposts tab and copy the list for the dashboard.
  *
  * For each video: look for a "Remove repost" control; if it is not visible, open
  * the Share panel once and look again. Only an element whose text is exactly
- * "Remove repost" is clicked. Pacing is randomised, and the run stops on rate-limit
- * messages or after three failures in a row.
+ * "Remove repost" is clicked. The run stops on rate-limit messages or after three
+ * failures in a row.
  *
- * UNTESTED on a real account: the Share button and Remove repost control matching,
- * and whether TikTok allows the video page to load in a frame, must be verified.
+ * UNTESTED on a real account: the desktop control matching and speed must be verified.
  */
 import {
   APP_TAG,
@@ -34,14 +36,30 @@ const RATE_LIMIT_DETAIL = "rate limited";
 const BTN =
   "background:#27272a;color:#fafafa;border:0;border-radius:10px;padding:9px 12px;font:600 13px system-ui,sans-serif;";
 
+/** Desktop-width frame so TikTok renders the desktop layout. */
+const FRAME_WIDTH = 1280;
+const FRAME_HEIGHT = 900;
+
 let stopRequested = false;
 let paused = false;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
-const randomDelay = (): number => 2500 + Math.floor(Math.random() * 2500);
+/** Pause between items: short enough to be practical, randomised to look less mechanical. */
+const randomDelay = (): number => 1500 + Math.floor(Math.random() * 1300);
 
 async function waitIfPaused(): Promise<void> {
   while (paused && !stopRequested) await sleep(300);
+}
+
+/** Polls until check() returns a truthy value, or the timeout passes (returns null). */
+async function waitFor<T>(check: () => T | null | undefined | false, timeoutMs: number, intervalMs = 200): Promise<T | null> {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() >= end) return null;
+    await sleep(intervalMs);
+  }
 }
 
 interface Panel {
@@ -242,29 +260,30 @@ async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEnt
   frame.setAttribute("aria-hidden", "true");
   frame.setAttribute(
     "style",
-    "position:fixed;width:360px;height:640px;left:-10000px;top:0;border:0;opacity:0;pointer-events:none",
+    `position:fixed;width:${FRAME_WIDTH}px;height:${FRAME_HEIGHT}px;left:0;top:0;border:0;opacity:0;pointer-events:none;z-index:-1`,
   );
   document.body.appendChild(frame);
   try {
     const loaded = waitForLoad(frame, 20000);
     frame.src = item.url;
     await loaded;
-    await sleep(1500);
 
     const doc = frame.contentDocument;
     if (!doc || doc.URL === "about:blank") {
       return { id: item.id, outcome: "failed", detail: "video page could not be opened" };
     }
 
-    let button = findRemoveButton(doc);
+    // Wait only as long as needed for the page to render its controls.
+    await waitFor(() => findRemoveButton(doc) || findShareButton(doc), 6000, 250);
+
+    let button: HTMLElement | null = findRemoveButton(doc);
     let openedShare = false;
     if (!button) {
       const share = findShareButton(doc);
       if (share) {
         share.click();
         openedShare = true;
-        await sleep(1500);
-        button = findRemoveButton(doc);
+        button = await waitFor(() => findRemoveButton(doc), 3000, 200);
       }
     }
 
@@ -273,8 +292,8 @@ async function processItem(item: RepostItem, dryRun: boolean): Promise<ResultEnt
         return { id: item.id, outcome: "dry-run", detail: "Remove repost control found" };
       }
       button.click();
-      await sleep(1800);
-      if (findRemoveButton(doc)) {
+      const gone = await waitFor(() => !findRemoveButton(doc), 4000, 200);
+      if (!gone) {
         return { id: item.id, outcome: "failed", detail: "control still present after click" };
       }
       return { id: item.id, outcome: "removed" };

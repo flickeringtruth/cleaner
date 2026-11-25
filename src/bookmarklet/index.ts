@@ -36,9 +36,9 @@ const RATE_LIMIT_DETAIL = "rate limited";
 const BTN =
   "background:#27272a;color:#fafafa;border:0;border-radius:10px;padding:9px 12px;font:600 13px system-ui,sans-serif;";
 
-/** Desktop-width frame so TikTok renders the desktop layout. */
+/** 16:9 desktop-sized frame so TikTok renders its desktop layout. */
 const FRAME_WIDTH = 1280;
-const FRAME_HEIGHT = 900;
+const FRAME_HEIGHT = 720;
 
 let stopRequested = false;
 let paused = false;

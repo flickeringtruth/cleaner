@@ -27,7 +27,15 @@ Test mode is on by default. It finds the control but does not click it. Run one 
 
 ## Status
 
-Untested on a live account. The bookmark's removal step depends on TikTok's page layout, which can change. Expect to adjust selectors after the first real run.
+Untested on a live account. The bookmark's removal step depends on TikTok's page layout, which can change. The Remove repost control has only been observed in TikTok's desktop layout, and the bookmark has not yet removed a repost reliably.
+
+## Credits
+
+The idea of removing reposts by clicking the repost control directly on a full-screen video, with a delay and a stop flag, comes from [SouthVirginia19/tiktok-repost-remover](https://github.com/SouthVirginia19/tiktok-repost-remover), which is MIT-licensed. No code from that project has been copied into this one.
+
+## License
+
+[MIT](LICENSE)
 
 ## Build
 

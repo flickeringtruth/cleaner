@@ -3,15 +3,14 @@
  *
  * Two modes:
  * - On a full-screen video: walk through reposts with the page's own next button,
- *   clicking the repost control only on videos that are in the copied batch and
- *   show a reposted state.
+ *   clicking the repost control only on videos in the copied batch that look reposted.
  * - On any other TikTok page: scan the page for videos and copy the list to the clipboard.
  *
- * Selectors come from TikTok's data-e2e attributes and the reposted-state check follows
- * the logic in tiktok-remover-extension (MIT, BrittAbdula). See README credits.
+ * Selectors use TikTok's data-e2e attributes. The reposted-state check follows
+ * tiktok-remover-extension (MIT, BrittAbdula). See README credits.
  *
- * Safety: only batch videos are considered, reposted state is checked before clicking,
- * and test mode only reports.
+ * Diagnostics: when a video is skipped, the result includes the control's attributes
+ * and the page's data-e2e names, so a failed run shows what is on the page.
  */
 import {
   APP_TAG,
@@ -37,8 +36,9 @@ const REPOST_FALLBACK = '[data-e2e="video-share-repost"]';
 const REPOST_ICON = 'svg[data-e2e="repost-icon"]';
 const NEXT_SELECTOR = 'button[data-e2e="arrow-right"]';
 
-const DELAY_MIN = 500;
-const DELAY_MAX = 900;
+const DELAY_MIN = 300;
+const DELAY_MAX = 500;
+const CLICK_SETTLE_MS = 250;
 
 let stopRequested = false;
 let paused = false;
@@ -46,17 +46,17 @@ let paused = false;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
 const randomDelay = (): number => DELAY_MIN + Math.floor(Math.random() * (DELAY_MAX - DELAY_MIN));
 
-/** Sleeps in 100ms steps so Pause and Stop take effect quickly. */
+/** Sleeps in 50ms steps so Pause and Stop take effect quickly. */
 async function pausableSleep(ms: number): Promise<void> {
   let elapsed = 0;
   while (elapsed < ms && !stopRequested) {
-    while (paused && !stopRequested) await sleep(200);
-    await sleep(100);
-    elapsed += 100;
+    while (paused && !stopRequested) await sleep(150);
+    await sleep(50);
+    elapsed += 50;
   }
 }
 
-async function waitFor<T>(check: () => T | null | undefined | false, timeoutMs: number, intervalMs = 150): Promise<T | null> {
+async function waitFor<T>(check: () => T | null | undefined | false, timeoutMs: number, intervalMs = 80): Promise<T | null> {
   const end = Date.now() + timeoutMs;
   for (;;) {
     const value = check();
@@ -169,20 +169,40 @@ function findRepostButton(): HTMLElement | null {
   return icon?.closest<HTMLElement>("button") ?? null;
 }
 
-/** Reposted if the button reports pressed, or its color differs from the idle white. */
+/** Reposted if the control reports pressed, or its color differs from the idle white. */
 function isReposted(button: HTMLElement): boolean {
   if (button.getAttribute("aria-pressed") === "true") return true;
   return window.getComputedStyle(button).color !== "rgb(255, 255, 255)";
 }
 
+/** Short description of the control, for diagnosis. */
+function describeControl(button: HTMLElement): string {
+  const pressed = button.getAttribute("aria-pressed") ?? "none";
+  const color = window.getComputedStyle(button).color;
+  return `aria-pressed=${pressed}, color=${color}`;
+}
+
+/** Names of data-e2e attributes on the page, for diagnosis when the control is missing. */
+function pageE2eNames(): string {
+  const names = Array.from(document.querySelectorAll<HTMLElement>("[data-e2e]"))
+    .map((n) => n.getAttribute("data-e2e") ?? "")
+    .filter((v) => v.length > 0);
+  const unique = [...new Set(names)].slice(0, 20);
+  return unique.length ? unique.join(", ") : "none";
+}
+
 async function processCurrent(id: string, inBatch: boolean, dryRun: boolean): Promise<ResultEntry | null> {
   if (!inBatch) return null;
   const button = findRepostButton();
-  if (!button) return { id, outcome: "skipped", detail: "repost control not found on this video" };
-  if (!isReposted(button)) return { id, outcome: "skipped", detail: "video does not look reposted; not clicked" };
-  if (dryRun) return { id, outcome: "dry-run", detail: "reposted control found" };
+  if (!button) {
+    return { id, outcome: "skipped", detail: `repost control not found. Page data-e2e: ${pageE2eNames()}` };
+  }
+  if (!isReposted(button)) {
+    return { id, outcome: "skipped", detail: `not reposted; not clicked (${describeControl(button)})` };
+  }
+  if (dryRun) return { id, outcome: "dry-run", detail: `reposted control found (${describeControl(button)})` };
   button.click();
-  await pausableSleep(700);
+  await pausableSleep(CLICK_SETTLE_MS);
   return { id, outcome: "removed", detail: "clicked; confirm on your Reposts tab" };
 }
 
@@ -197,7 +217,7 @@ async function runPlayer(payload: RemovePayload, panel: Panel): Promise<void> {
   panel.title(payload.dryRun ? "Test run · nothing will be clicked" : "Removing reposts");
 
   for (let step = 0; step < 200 && processed < limit; step++) {
-    while (paused && !stopRequested) await sleep(200);
+    while (paused && !stopRequested) await sleep(150);
     if (stopRequested) break;
 
     const id = currentVideoId();
@@ -232,7 +252,7 @@ async function runPlayer(payload: RemovePayload, panel: Panel): Promise<void> {
       break;
     }
     next.click();
-    const moved = await waitFor(() => currentVideoId() !== id, 6000);
+    const moved = await waitFor(() => currentVideoId() !== id, 4000);
     if (!moved) {
       panel.status("The next video did not load. Stopped.");
       break;
@@ -285,8 +305,7 @@ async function runScan(panel: Panel): Promise<void> {
   collect(seen);
   let idle = 0;
   for (let round = 0; round < 80 && !stopRequested && idle < 3; round++) {
-    await pausableSleep(0);
-    while (paused && !stopRequested) await sleep(200);
+    while (paused && !stopRequested) await sleep(150);
     const before = seen.size;
     window.scrollTo(0, document.documentElement.scrollHeight);
     await sleep(1400);

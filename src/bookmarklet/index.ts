@@ -3,13 +3,15 @@
  *
  * Two modes:
  * - On a full-screen video: walk through reposts with the page's own next button,
- *   clicking the repost control on each video in the batch copied from the dashboard.
+ *   clicking the repost control only on videos that are in the copied batch and
+ *   show a reposted state.
  * - On any other TikTok page: scan the page for videos and copy the list to the clipboard.
  *
- * Selectors come from TikTok's data-e2e attributes, as used by existing community
- * scripts (MIT-licensed, see README). Verify them on your own account before a real run.
+ * Selectors come from TikTok's data-e2e attributes and the reposted-state check follows
+ * the logic in tiktok-remover-extension (MIT, BrittAbdula). See README credits.
  *
- * Safety: only videos listed in the copied batch are clicked. Test mode only reports.
+ * Safety: only batch videos are considered, reposted state is checked before clicking,
+ * and test mode only reports.
  */
 import {
   APP_TAG,
@@ -35,7 +37,6 @@ const REPOST_FALLBACK = '[data-e2e="video-share-repost"]';
 const REPOST_ICON = 'svg[data-e2e="repost-icon"]';
 const NEXT_SELECTOR = 'button[data-e2e="arrow-right"]';
 
-/** Pause between videos, randomised a little. */
 const DELAY_MIN = 500;
 const DELAY_MAX = 900;
 
@@ -45,11 +46,16 @@ let paused = false;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
 const randomDelay = (): number => DELAY_MIN + Math.floor(Math.random() * (DELAY_MAX - DELAY_MIN));
 
-async function waitIfPaused(): Promise<void> {
-  while (paused && !stopRequested) await sleep(300);
+/** Sleeps in 100ms steps so Pause and Stop take effect quickly. */
+async function pausableSleep(ms: number): Promise<void> {
+  let elapsed = 0;
+  while (elapsed < ms && !stopRequested) {
+    while (paused && !stopRequested) await sleep(200);
+    await sleep(100);
+    elapsed += 100;
+  }
 }
 
-/** Polls until check() returns a truthy value, or the timeout passes (returns null). */
 async function waitFor<T>(check: () => T | null | undefined | false, timeoutMs: number, intervalMs = 150): Promise<T | null> {
   const end = Date.now() + timeoutMs;
   for (;;) {
@@ -130,7 +136,6 @@ function openPanel(): Panel {
   };
 }
 
-/** Writes a result to the clipboard, or shows it for manual copying if blocked. */
 async function deliver(panel: Panel, text: string, success: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
@@ -141,7 +146,6 @@ async function deliver(panel: Panel, text: string, success: string): Promise<voi
   }
 }
 
-/** Reads the clipboard for a batch. Falls back to a prompt if access is blocked. */
 async function readBatchText(): Promise<string> {
   try {
     return (await navigator.clipboard.readText()).trim();
@@ -165,13 +169,20 @@ function findRepostButton(): HTMLElement | null {
   return icon?.closest<HTMLElement>("button") ?? null;
 }
 
+/** Reposted if the button reports pressed, or its color differs from the idle white. */
+function isReposted(button: HTMLElement): boolean {
+  if (button.getAttribute("aria-pressed") === "true") return true;
+  return window.getComputedStyle(button).color !== "rgb(255, 255, 255)";
+}
+
 async function processCurrent(id: string, inBatch: boolean, dryRun: boolean): Promise<ResultEntry | null> {
-  if (!inBatch) return null; // not part of the copied batch: do nothing, just move on
+  if (!inBatch) return null;
   const button = findRepostButton();
   if (!button) return { id, outcome: "skipped", detail: "repost control not found on this video" };
-  if (dryRun) return { id, outcome: "dry-run", detail: "repost control found" };
+  if (!isReposted(button)) return { id, outcome: "skipped", detail: "video does not look reposted; not clicked" };
+  if (dryRun) return { id, outcome: "dry-run", detail: "reposted control found" };
   button.click();
-  await sleep(700);
+  await pausableSleep(700);
   return { id, outcome: "removed", detail: "clicked; confirm on your Reposts tab" };
 }
 
@@ -186,7 +197,7 @@ async function runPlayer(payload: RemovePayload, panel: Panel): Promise<void> {
   panel.title(payload.dryRun ? "Test run · nothing will be clicked" : "Removing reposts");
 
   for (let step = 0; step < 200 && processed < limit; step++) {
-    await waitIfPaused();
+    while (paused && !stopRequested) await sleep(200);
     if (stopRequested) break;
 
     const id = currentVideoId();
@@ -203,8 +214,7 @@ async function runPlayer(payload: RemovePayload, panel: Panel): Promise<void> {
     panel.status(`${processed + 1} of ${limit} · ${id}`);
     panel.progress(processed / limit);
 
-    const inBatch = batchIds.has(id);
-    const result = await processCurrent(id, inBatch, payload.dryRun);
+    const result = await processCurrent(id, batchIds.has(id), payload.dryRun);
     if (result) {
       results.push(result);
       processed++;
@@ -227,7 +237,7 @@ async function runPlayer(payload: RemovePayload, panel: Panel): Promise<void> {
       panel.status("The next video did not load. Stopped.");
       break;
     }
-    await sleep(randomDelay());
+    await pausableSleep(randomDelay());
   }
 
   panel.progress(1);
@@ -275,7 +285,8 @@ async function runScan(panel: Panel): Promise<void> {
   collect(seen);
   let idle = 0;
   for (let round = 0; round < 80 && !stopRequested && idle < 3; round++) {
-    await waitIfPaused();
+    await pausableSleep(0);
+    while (paused && !stopRequested) await sleep(200);
     const before = seen.size;
     window.scrollTo(0, document.documentElement.scrollHeight);
     await sleep(1400);
